@@ -1,0 +1,94 @@
+name: Build Docker image
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Every day
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'  # Prevent the workflow from triggering itself
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check versions
+        env:
+          BUILDANDPUSH: no
+        run: |
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/caddyserver/caddy/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/^v//')
+          LAST_VERSION_FILE="version_caddy.txt"
+          if [ -f "$LAST_VERSION_FILE" ]; then
+            LAST_VERSION=$(cat "$LAST_VERSION_FILE")
+          else
+            LAST_VERSION="none"
+          fi
+          LATEST_IMAGE_UPDATED=$(curl -s https://hub.docker.com/v2/namespaces/library/repositories/caddy/tags/2-builder-alpine | grep '"last_updated":' | sed -E 's/.*"last_updated":\s*"([^"]+)".*/\1/')
+          LAST_IMAGE_FILE="version_caddy_imagepushdate.txt"
+          if [ -f "$LAST_IMAGE_FILE" ]; then
+            LAST_IMAGE=$(cat "$LAST_IMAGE_FILE")
+          else
+            LAST_IMAGE="none"
+          fi
+        
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          
+          # Compare versions and decide if we should build and push
+          if [ "$LATEST_IMAGE_UPDATED" != "$LAST_IMAGE" ]; then
+            echo $LATEST_IMAGE_UPDATED > $LAST_IMAGE_FILE
+            git add $LAST_IMAGE_FILE
+            git commit -m "New Alpine Docker image updated"
+            echo "BUILDANDPUSH=true" >> $GITHUB_ENV
+          fi
+
+          echo "LATEST_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
+
+      - name: Generate Dockerfile
+        run: |
+          cat > Dockerfile <<EOF
+          FROM caddy:${{ env.LATEST_VERSION }}-builder AS builder
+          RUN xcaddy build \
+              --with github.com/caddy-dns/cloudflare
+
+          FROM caddy:${{ env.LATEST_VERSION }}-alpine
+
+          COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+          EOF
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        if: ${{ env.BUILDANDPUSH == 'true' }}
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU for multi-platform builds
+        uses: docker/setup-qemu-action@v3
+        if: ${{ env.BUILDANDPUSH == 'true' }}
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up tagging
+        run: |
+          echo MAJOR_VERSION=$(echo ${{ env.LATEST_VERSION }} | cut -c 1) >> $GITHUB_ENV
+
+      - name: Build and push multi-arch Docker image
+        uses: docker/build-push-action@v6
+        if: ${{ env.BUILDANDPUSH == 'true' }}
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ vars.DOCKERHUB_USERNAME }}/alpine-ssh:latest
+            ${{ vars.DOCKERHUB_USERNAME }}/alpine-ssh:${{ env.LATEST_VERSION }}
+          platforms: linux/amd64,linux/arm64
+
+      - name: Update version on file
+        run: |
+          git push origin main
