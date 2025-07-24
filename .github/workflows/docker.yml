@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Every day
+    - cron: '2 0 * * *'  # Every day
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
@@ -24,6 +24,7 @@ jobs:
           # Retry up to 10 times to get LATEST_VERSION
           for i in $(seq 1 10); do
             LATEST_VERSION=$(curl -s https://api.github.com/repos/caddyserver/caddy/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/^v//')
+            echo "Latest version: ${LATEST_VERSION}"
             if [ -n "$LATEST_VERSION" ]; then
               break
             fi
@@ -34,9 +35,7 @@ jobs:
             echo "Failed to fetch LATEST_VERSION after 3 attempts." >&2
             exit 1
           fi
-
           echo "LATEST_VERSION=${LATEST_VERSION}" >> $GITHUB_ENV
-          echo "Latest version: ${LATEST_VERSION}"
 
           MAJOR_VERSION=$(echo ${LATEST_VERSION} | awk -F. '{print $1 "." $2}')
           echo "MAJOR_VERSION=${MAJOR_VERSION}" >> $GITHUB_ENV
